@@ -1,0 +1,17 @@
+[submodule "dep/dynamic-microkit"]
+	path = dep/dynamic-microkit
+	url = https://github.com/au-ts/dynamic-microkit
+	branch = carrells_demo
+[submodule "dep/microkit_sdf_gen"]
+	path = dep/microkit_sdf_gen
+	url = https://github.com/au-ts/microkit_sdf_gen
+	branch = carrells_demo
+[submodule "dep/libvmm"]
+	path = dep/libvmm
+	url = https://github.com/au-ts/libvmm
+[submodule "dep/lionsos"]
+	path = dep/lionsos
+	url = https://github.com/au-ts/lionsos
+[submodule "dep/sddf"]
+	path = dep/sddf
+	url = https://github.com/au-ts/sddf
