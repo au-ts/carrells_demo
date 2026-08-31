@@ -1,6 +1,9 @@
 # Copyright 2026, UNSW
 # SPDX-License-Identifier: BSD-2-Clause
+import sys, os
 import argparse
+import struct
+import subprocess
 from dataclasses import dataclass
 from board import BOARDS, add_x86_hpet
 from sdfgen import SystemDescription, Sddf, DeviceTree, Vmm
@@ -12,7 +15,9 @@ assert version("sdfgen").split(".")[1] == "35", "Unexpected sdfgen version"
 ProtectionDomain = SystemDescription.ProtectionDomain
 VirtualMachine = SystemDescription.VirtualMachine
 MemoryRegion = SystemDescription.MemoryRegion
+CNode = SystemDescription.CNode
 Map = SystemDescription.Map
+CapMap = SystemDescription.CapMap
 Channel = SystemDescription.Channel
 IrqIoapic = SystemDescription.IrqIoapic
 
@@ -34,13 +39,12 @@ def init_timer_system():
         sdf.add_pd(timer_driver)
         add_x86_hpet(sdf, timer_driver)
 
-        print("x86 timer system")
         return timer_system
 
     return None
 
 
-def init_serial_system():
+def init_serial_system(timer_system: Sddf.Timer):
     # Serial subsystem
     serial_driver = ProtectionDomain("serial_driver", "serial_driver.elf", priority=200)
     serial_virt_tx = ProtectionDomain(
@@ -70,7 +74,6 @@ def init_serial_system():
         serial_driver.add_ioport(serial_port)
         serial_irq = SystemDescription.IrqIoapic(0, 4, 0, id=1)
         serial_driver.add_irq(serial_irq)
-        print("x86 serial system")
 
     sdf.add_pd(serial_driver)
     sdf.add_pd(serial_virt_tx)
@@ -79,7 +82,7 @@ def init_serial_system():
     return serial_system
 
 
-def init_net_system(timer_system: Sddf.Timer):
+def init_net_system(timer_system: Sddf.Timer, pci_driver: ProtectionDomain):
     # Net subsystem
     net_node = None
     if board.arch != SystemDescription.Arch.X86_64:
@@ -98,7 +101,6 @@ def init_net_system(timer_system: Sddf.Timer):
     if board.name == "qemu_virt_x86":
         x86_virtio_net(eth_driver)
     elif board.name == "vb_105" or board.name == "viscous":
-        print("x86 net system: ", board.name)
         x86_ixgbe_net(eth_driver)
         timer_system.add_client(eth_driver)
 
@@ -109,6 +111,10 @@ def init_net_system(timer_system: Sddf.Timer):
     sdf.add_pd(net_virt_rx)
     sdf.add_pd(net_virt_tx)
     sdf.add_pd(vswitch)
+
+    pci_driver.add_cap_map(CapMap(CapMap.CapType.Vspace, eth_driver, None, 2))
+    pci_driver.add_cap_map(CapMap(CapMap.CapType.Cspace, eth_driver, None, 3))
+    sdf.add_channel(Channel(pci_driver, eth_driver, a_id=1, b_id=10))
 
     return net_system, net_virt_tx
 
@@ -140,14 +146,15 @@ def x86_virtio_net(eth_driver):
     )
     eth_driver.add_irq(virtio_net_irq)
 
+
 def x86_ixgbe_net(eth_driver):
-    ixgbe_regs = MemoryRegion(
-        sdf, name="eth_region_0", size=0x100000, paddr=board.ethernet
-    )
-    sdf.add_mr(ixgbe_regs)
-    eth_driver.add_map(
-        Map(ixgbe_regs, vaddr=0x2000000, perms="rw", cached=False)
-    )
+    # ixgbe_regs = MemoryRegion(
+    #     sdf, name="eth_region_0", size=0x100000, paddr=board.ethernet
+    # )
+    # sdf.add_mr(ixgbe_regs)
+    # eth_driver.add_map(
+    #     Map(ixgbe_regs, vaddr=0x2000000, perms="rw", cached=False)
+    # )
 
     # We can use `write-back` caching (i.e. cached=True) on x86 because the bus
     # will perform cache snooping in hardware, making it DMA coherent.
@@ -164,15 +171,17 @@ def x86_ixgbe_net(eth_driver):
     eth_driver.add_map(Map(hw_tx_ring_buffer, vaddr=0x2404000, perms="rw"))
 
     # Legacy I/O APIC
-    eth_irq = SystemDescription.IrqIoapic(
-        ioapic_id=0,
-        pin=16,
-        vector=8,
-        trigger=IrqIoapic.Trigger.LEVEL,
-        polarity=IrqIoapic.Polarity.ACTIVELOW,
-        id=16,
-    )
-    eth_driver.add_irq(eth_irq)
+    # eth_irq = SystemDescription.IrqIoapic(
+    #     ioapic_id=0,
+    #     pin=16,
+    #     vector=8,
+    #     trigger=IrqIoapic.Trigger.LEVEL,
+    #     polarity=IrqIoapic.Polarity.ACTIVELOW,
+    #     id=16,
+    # )
+    # eth_driver.add_irq(eth_irq)
+    eth_driver.add_irq_placeholder(16)
+
 
 def add_vm_client(
     client_id: int,
@@ -213,20 +222,145 @@ def add_vm_client(
     return client, vmm_client, vm_client
 
 
+class AcpiTablesConfig:
+    def __init__(
+        self,
+        max_total_size: int,
+    ):
+        self.max_total_size = max_total_size
+        self.patched_tables_end = 0
+        self.alignment = 0x1000
+        self.max_num_acpi_tables = 20 # This needs to be synced with MAX_NUM_ACPI_TABLES in acpi.h
+        self.num_tables = 0
+        self.acpi_table_bytes = bytearray()
+        self.acpi_table_pointers = [0] * self.max_num_acpi_tables
+
+    # TODO: add the checks
+    def add_acpi_table(self, acpi_file):
+        acpi_file = "/Users/terrybai/tmp/acpi_vb105/vb105_acpi/" + acpi_file + ".dat"
+        print(acpi_file)
+        assert os.path.isfile(acpi_file)
+        with open(acpi_file, "rb") as data_file:
+            byte_list = list(data_file.read())
+
+            if len(byte_list) + len(self.acpi_table_bytes) < self.max_total_size:
+                self.acpi_table_pointers[self.num_tables] = len(self.acpi_table_bytes)
+                self.acpi_table_bytes.extend(byte_list)
+                self.patched_tables_end = len(self.acpi_table_bytes)
+                self.num_tables += 1
+
+        trailing_len = len(self.acpi_table_bytes) % self.alignment
+        if trailing_len != 0:
+            padding_len = self.alignment - trailing_len
+            if padding_len + len(self.acpi_table_bytes) < self.max_total_size:
+                self.acpi_table_bytes.extend(b"\x00" * padding_len)
+
+    def tables_serialise(self):
+        pack_str = "<" + "B" * len(self.acpi_table_bytes)
+
+        return struct.pack(
+            pack_str,
+            *self.acpi_table_bytes
+        )
+
+    def summary_serialise(self):
+        pack_str = "<" + "Q" * self.max_num_acpi_tables + "QQII"
+
+        return struct.pack(
+            pack_str,
+            *self.acpi_table_pointers,
+            self.patched_tables_end,
+            self.max_total_size,
+            self.alignment,
+            self.num_tables,
+        )
+
+
+def init_acpi_pci():
+    acpi_driver = ProtectionDomain("acpi_driver", "acpi_driver.elf", priority=253, stack_size=0x5000)
+    pci_driver = ProtectionDomain("pci_driver", "pci_driver.elf", priority=252)
+
+    acpi_bootinfo_post_capdl_untypeds = MemoryRegion(sdf, "bootinfo_post_capdl_untypeds", 0x1000, prefill_bootinfo="post_capdl_untypeds")
+    sdf.add_mr(acpi_bootinfo_post_capdl_untypeds)
+    acpi_driver.add_map(Map(acpi_bootinfo_post_capdl_untypeds, 0x2000000, "r", setvar_vaddr="bootinfo_post_capdl_untypeds"))
+
+    acpi_bootinfo_rsdp = MemoryRegion(sdf, "bootinfo_rsdp", 0x1000, prefill_bootinfo="x86_acpi_rsdp")
+    sdf.add_mr(acpi_bootinfo_rsdp)
+    acpi_driver.add_map(Map(acpi_bootinfo_rsdp, 0x2001000, "r", setvar_vaddr="bootinfo_rsdp"))
+
+    acpi_tables_config = AcpiTablesConfig(0x500000)
+
+    cnode_remaining_untypeds = CNode("remaining_untypeds", True, 9)
+    sdf.add_cnode(cnode_remaining_untypeds)
+    acpi_driver.add_cap_map(CapMap(CapMap.CapType.Cnode, None, cnode_remaining_untypeds, 1))
+    acpi_driver.add_cap_map(CapMap(CapMap.CapType.Vspace, pci_driver, None, 2))
+
+    cnode_pci_resources = CNode("pci_resources", False, 9)
+    sdf.add_cnode(cnode_pci_resources)
+    acpi_driver.add_cap_map(CapMap(CapMap.CapType.Cnode, None, cnode_pci_resources, 3))
+    pci_driver.add_cap_map(CapMap(CapMap.CapType.Cnode, None, cnode_pci_resources, 1))
+
+    mr_aml_object_pool = MemoryRegion(sdf, "aml_object_pool", 0x100000)
+    sdf.add_mr(mr_aml_object_pool)
+    acpi_driver.add_map(Map(mr_aml_object_pool, 0x30000000, "rw"))
+
+    mr_aml_state_stack = MemoryRegion(sdf, "aml_state_stack", 0x10000)
+    sdf.add_mr(mr_aml_state_stack)
+    acpi_driver.add_map(Map(mr_aml_state_stack, 0x50000000, "rw"))
+
+    mr_acpi_tables_copy = MemoryRegion(sdf, "acpi_tables_copy", 0x50000)
+    sdf.add_mr(mr_acpi_tables_copy)
+    acpi_driver.add_map(Map(mr_acpi_tables_copy, 0x40000000, "rw"))
+
+    mr_pci_resources = MemoryRegion(sdf, "pci_resources", 0x40000)
+    sdf.add_mr(mr_pci_resources)
+    acpi_driver.add_map(Map(mr_pci_resources, 0x60000000, "rw", cached=False))
+    pci_driver.add_map(Map(mr_pci_resources, 0x60000000, "rw", cached=False))
+
+    sdf.add_channel(Channel(acpi_driver, pci_driver, a_id=0, b_id=0))
+    sdf.add_pd(acpi_driver)
+    sdf.add_pd(pci_driver)
+
+    return acpi_driver, pci_driver, acpi_tables_config
+
+
+# Assumes elf string has ".elf" suffix, adds ".data" to data string
+def update_elf_section(
+    elf_name: str, section_name: str, data_name: str, data_number=None
+):
+    assert os.path.isfile(elf_name)
+    if data_number != None:
+        data_name += str(data_number)
+    data_name += ".data"
+    assert os.path.isfile(data_name)
+    assert (
+        subprocess.run(
+            [
+                obj_copy,
+                "--update-section",
+                "." + section_name + "=" + data_name,
+                elf_name,
+            ]
+        ).returncode
+        == 0
+    )
+
+
 def generate(
     sdf_file: str,
     output_dir: str,
     dtb: Optional[DeviceTree],
     client_dtb: Optional[DeviceTree],
 ):
+    acpi_driver, pci_driver, acpi_tables_config = init_acpi_pci()
     timer_system = init_timer_system()
-    serial_system = init_serial_system()
-    net_system, net_virt_tx = init_net_system(timer_system)
+    serial_system = init_serial_system(timer_system)
+    net_system, net_virt_tx = init_net_system(timer_system, pci_driver)
 
     client0, vmm_client0, vm_client0 = add_vm_client(0, 0, serial_system, net_system, timer_system, client_dtb)
-    client1, vmm_client1, vm_client1 = add_vm_client(1, 1, serial_system, net_system, timer_system, client_dtb)
-    client2, vmm_client2, vm_client2 = add_vm_client(2, 2, serial_system, net_system, timer_system, client_dtb)
-    client3, vmm_client3, vm_client3 = add_vm_client(3, 3, serial_system, net_system, timer_system, client_dtb)
+    # client1, vmm_client1, vm_client1 = add_vm_client(1, 1, serial_system, net_system, timer_system, client_dtb)
+    # client2, vmm_client2, vm_client2 = add_vm_client(2, 2, serial_system, net_system, timer_system, client_dtb)
+    # client3, vmm_client3, vm_client3 = add_vm_client(3, 3, serial_system, net_system, timer_system, client_dtb)
 
     if timer_system:
         assert timer_system.connect()
@@ -241,29 +375,31 @@ def generate(
     # 1 <-> 0, 3, V
     # 2 <-> V
     # 3 <-> 0, 1, V
-    net_system.add_acl_rule(vmm_client0, vmm_client3)
-    net_system.add_acl_rule(vmm_client0, net_virt_tx)
-    net_system.add_acl_rule(vmm_client1, vmm_client0)
-    net_system.add_acl_rule(vmm_client1, net_virt_tx)
-    net_system.add_acl_rule(vmm_client2, net_virt_tx)
-    net_system.add_acl_rule(vmm_client3, vmm_client0)
-    net_system.add_acl_rule(vmm_client3, vmm_client1)
-    net_system.add_acl_rule(vmm_client3, net_virt_tx)
+    # net_system.add_acl_rule(vmm_client0, vmm_client3)
+    # net_system.add_acl_rule(vmm_client0, net_virt_tx)
+    # net_system.add_acl_rule(vmm_client1, vmm_client0)
+    # net_system.add_acl_rule(vmm_client1, net_virt_tx)
+    # net_system.add_acl_rule(vmm_client2, net_virt_tx)
+    # net_system.add_acl_rule(vmm_client3, vmm_client0)
+    # net_system.add_acl_rule(vmm_client3, vmm_client1)
+    # net_system.add_acl_rule(vmm_client3, net_virt_tx)
 
     assert net_system.serialise_config(output_dir)
-    print("ello")
     assert client0.connect()
-    print("ello")
     assert client0.serialise_config(output_dir)
-    assert client1.connect()
-    assert client1.serialise_config(output_dir)
-    assert client2.connect()
-    assert client2.serialise_config(output_dir)
-    assert client3.connect()
-    assert client3.serialise_config(output_dir)
+    # assert client1.connect()
+    # assert client1.serialise_config(output_dir)
+    # assert client2.connect()
+    # assert client2.serialise_config(output_dir)
+    # assert client3.connect()
+    # assert client3.serialise_config(output_dir)
 
     with open(f"{output_dir}/{sdf_file}", "w+") as f:
         f.write(sdf.render())
+
+    with open(f"{output_dir}/acpi_tables_summary.data", "wb+") as f:
+        f.write(acpi_tables_config.summary_serialise())
+    update_elf_section("acpi_driver.elf", "acpi_tables_summary", "acpi_tables_summary")
 
 
 if __name__ == "__main__":
@@ -273,6 +409,7 @@ if __name__ == "__main__":
     parser.add_argument("--sddf", required=True)
     parser.add_argument("--board", required=True, choices=[b.name for b in BOARDS])
     parser.add_argument("--output", required=True)
+    parser.add_argument("--objcopy", required=True)
     parser.add_argument("--sdf", required=True)
 
     args = parser.parse_args()
@@ -288,6 +425,9 @@ if __name__ == "__main__":
     sdf = SystemDescription(board.arch, paddr_top)
 
     sddf = Sddf(args.sddf)
+
+    global obj_copy
+    obj_copy = args.objcopy
 
     dtb = None
     client_dtb = None

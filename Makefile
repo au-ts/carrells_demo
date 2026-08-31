@@ -12,9 +12,9 @@ $(error MICROKIT_SDK must be specified)
 endif
 override MICROKIT_SDK := $(abspath $(MICROKIT_SDK))
 
-ifeq ($(findstring smp-,$(MICROKIT_CONFIG)),)
-$(error MICROKIT_CONFIG must be one of smp-debug, smp-release or smp-benchmark)
-endif
+# ifeq ($(findstring smp-,$(MICROKIT_CONFIG)),)
+# $(error MICROKIT_CONFIG must be one of smp-debug, smp-release or smp-benchmark)
+# endif
 
 BUILD_DIR ?= build
 export BUILD_DIR := $(abspath ${BUILD_DIR})
