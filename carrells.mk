@@ -33,8 +33,6 @@ METAPROGRAM := $(CARRELLS_EXAMPLE)/meta.py
 
 SDDF_CUSTOM_LIBC := 1
 
-CLIENT_VM_USERLEVEL_INIT := net_client_init
-
 vpath %.c $(SDDF) $(LIBVMM) $(CARRELLS_EXAMPLE)
 
 CFLAGS += \

@@ -82,7 +82,8 @@ def init_serial_system(timer_system: Sddf.Timer):
     return serial_system
 
 
-def init_net_system(timer_system: Sddf.Timer, pci_driver: ProtectionDomain):
+# def init_net_system(timer_system: Sddf.Timer, pci_driver: ProtectionDomain):
+def init_net_system(timer_system: Sddf.Timer):
     # Net subsystem
     net_node = None
     if board.arch != SystemDescription.Arch.X86_64:
@@ -112,9 +113,9 @@ def init_net_system(timer_system: Sddf.Timer, pci_driver: ProtectionDomain):
     sdf.add_pd(net_virt_tx)
     sdf.add_pd(vswitch)
 
-    pci_driver.add_cap_map(CapMap(CapMap.CapType.Vspace, eth_driver, None, 2))
-    pci_driver.add_cap_map(CapMap(CapMap.CapType.Cspace, eth_driver, None, 3))
-    sdf.add_channel(Channel(pci_driver, eth_driver, a_id=1, b_id=10))
+    # pci_driver.add_cap_map(CapMap(CapMap.CapType.Vspace, eth_driver, None, 2))
+    # pci_driver.add_cap_map(CapMap(CapMap.CapType.Cspace, eth_driver, None, 3))
+    # sdf.add_channel(Channel(pci_driver, eth_driver, a_id=1, b_id=10))
 
     return net_system, net_virt_tx
 
@@ -352,10 +353,11 @@ def generate(
     dtb: Optional[DeviceTree],
     client_dtb: Optional[DeviceTree],
 ):
-    acpi_driver, pci_driver, acpi_tables_config = init_acpi_pci()
+    # acpi_driver, pci_driver, acpi_tables_config = init_acpi_pci()
     timer_system = init_timer_system()
     serial_system = init_serial_system(timer_system)
-    net_system, net_virt_tx = init_net_system(timer_system, pci_driver)
+    # net_system, net_virt_tx = init_net_system(timer_system, pci_driver)
+    net_system, net_virt_tx = init_net_system(timer_system)
 
     client0, vmm_client0, vm_client0 = add_vm_client(0, 0, serial_system, net_system, timer_system, client_dtb)
     # client1, vmm_client1, vm_client1 = add_vm_client(1, 1, serial_system, net_system, timer_system, client_dtb)
@@ -397,9 +399,9 @@ def generate(
     with open(f"{output_dir}/{sdf_file}", "w+") as f:
         f.write(sdf.render())
 
-    with open(f"{output_dir}/acpi_tables_summary.data", "wb+") as f:
-        f.write(acpi_tables_config.summary_serialise())
-    update_elf_section("acpi_driver.elf", "acpi_tables_summary", "acpi_tables_summary")
+    # with open(f"{output_dir}/acpi_tables_summary.data", "wb+") as f:
+    #     f.write(acpi_tables_config.summary_serialise())
+    # update_elf_section("acpi_driver.elf", "acpi_tables_summary", "acpi_tables_summary")
 
 
 if __name__ == "__main__":

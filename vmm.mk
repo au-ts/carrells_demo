@@ -10,6 +10,8 @@ client_vm:
 
 CLIENT_VM = $(CARRELLS_EXAMPLE)/client_vm
 
+CLIENT_VM_USERLEVEL_INIT := net_client_init
+
 ${LINUX}:
 	curl -L ${LIBVMM_DOWNLOADS}/$(LINUX).tar.gz -o $(LINUX).tar.gz
 	mkdir -p linux_download_dir
@@ -32,13 +34,6 @@ client_vm/rootfs.cpio.gz: ${INITRD} \
 		client_vm/rootfs_staging -o $@ \
 		--startup $(CLIENT_VM_USERLEVEL_INIT) \
 		--home $(CLIENT_VM_USERLEVEL_HOME)
-
-client_vm/vm.dts: $(CLIENT_VM)/linux.dts $(CLIENT_VM)/$(GIC_DT_OVERLAY) \
-	$(CHECK_FLAGS_BOARD_MD5) |client_vm
-	$(LIBVMM)/tools/dtscat $^ > $@
-
-client_vm/vm.dtb: client_vm/vm.dts
-	$(DTC) -q -I dts -O dtb $< > $@
 
 client_vm/vm_dsdt.aml: $(CLIENT_VM)/carrells_dsdt.dsl |client_vm
 	$(IASL) -p $@ $^

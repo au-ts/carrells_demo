@@ -59,7 +59,8 @@ extern net_queue_handle_t net_tx_queue;
 static linux_x86_setup_ret_t linux_setup;
 static seL4_VCPUContext initial_regs;
 
-#define GUEST_CMDLINE "debug console=hvc0 loglevel=8"
+#define GUEST_CMDLINE "debug console=hvc0 loglevel=8 tsc=nowatchdog"
+/* #define GUEST_CMDLINE_HW "earlyprintk=serial,0x3f8,115200 debug console=ttyS0,115200 earlycon=serial,0x3f8,115200 loglevel=8" */
 #define GUEST_RAM_SIZE 0x10000000
 #define GUEST_RAM_HVA 0x20000000
 
@@ -74,6 +75,7 @@ bool guest_arch_init(void)
     arch_guest_init_t args = {
         .bsp = true,
         .timer_ch = timer_config.driver_id,
+        .apicv_hva = 0x3000000000,
         .num_guest_ram_regions = 1,
         .guest_ram_regions = { (struct guest_ram_region) {
             .gpa_start = LOW_RAM_START_GPA, .size = GUEST_RAM_SIZE, .vmm_vaddr = (void *)GUEST_RAM_HVA },
