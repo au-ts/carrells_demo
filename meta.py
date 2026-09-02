@@ -358,9 +358,9 @@ def generate(
     net_system, net_virt_tx = init_net_system(timer_system, pci_driver)
 
     client0, vmm_client0, vm_client0 = add_vm_client(0, 0, serial_system, net_system, timer_system, client_dtb)
-    # client1, vmm_client1, vm_client1 = add_vm_client(1, 1, serial_system, net_system, timer_system, client_dtb)
-    # client2, vmm_client2, vm_client2 = add_vm_client(2, 2, serial_system, net_system, timer_system, client_dtb)
-    # client3, vmm_client3, vm_client3 = add_vm_client(3, 3, serial_system, net_system, timer_system, client_dtb)
+    client1, vmm_client1, vm_client1 = add_vm_client(1, 1, serial_system, net_system, timer_system, client_dtb)
+    client2, vmm_client2, vm_client2 = add_vm_client(2, 2, serial_system, net_system, timer_system, client_dtb)
+    client3, vmm_client3, vm_client3 = add_vm_client(3, 3, serial_system, net_system, timer_system, client_dtb)
 
     if timer_system:
         assert timer_system.connect()
@@ -375,24 +375,24 @@ def generate(
     # 1 <-> 0, 3, V
     # 2 <-> V
     # 3 <-> 0, 1, V
-    # net_system.add_acl_rule(vmm_client0, vmm_client3)
+    net_system.add_acl_rule(vmm_client0, vmm_client3)
     net_system.add_acl_rule(vmm_client0, net_virt_tx)
-    # net_system.add_acl_rule(vmm_client1, vmm_client0)
-    # net_system.add_acl_rule(vmm_client1, net_virt_tx)
-    # net_system.add_acl_rule(vmm_client2, net_virt_tx)
-    # net_system.add_acl_rule(vmm_client3, vmm_client0)
-    # net_system.add_acl_rule(vmm_client3, vmm_client1)
-    # net_system.add_acl_rule(vmm_client3, net_virt_tx)
+    net_system.add_acl_rule(vmm_client1, vmm_client0)
+    net_system.add_acl_rule(vmm_client1, net_virt_tx)
+    net_system.add_acl_rule(vmm_client2, net_virt_tx)
+    net_system.add_acl_rule(vmm_client3, vmm_client0)
+    net_system.add_acl_rule(vmm_client3, vmm_client1)
+    net_system.add_acl_rule(vmm_client3, net_virt_tx)
 
     assert net_system.serialise_config(output_dir)
     assert client0.connect()
     assert client0.serialise_config(output_dir)
-    # assert client1.connect()
-    # assert client1.serialise_config(output_dir)
-    # assert client2.connect()
-    # assert client2.serialise_config(output_dir)
-    # assert client3.connect()
-    # assert client3.serialise_config(output_dir)
+    assert client1.connect()
+    assert client1.serialise_config(output_dir)
+    assert client2.connect()
+    assert client2.serialise_config(output_dir)
+    assert client3.connect()
+    assert client3.serialise_config(output_dir)
 
     with open(f"{output_dir}/{sdf_file}", "w+") as f:
         f.write(sdf.render())
