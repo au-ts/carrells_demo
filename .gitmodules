@@ -15,3 +15,6 @@
 [submodule "dep/sddf"]
 	path = dep/sddf
 	url = https://github.com/au-ts/sddf
+[submodule "dep/libmicrokitco"]
+	path = dep/libmicrokitco
+	url = https://github.com/au-ts/libmicrokitco.git

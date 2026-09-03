@@ -24,6 +24,7 @@ export MICROKIT_TOOL ?= $(MICROKIT_SDK)/bin/microkit
 export SDDF := $(abspath ./dep/sddf)
 export LIBVMM := $(abspath ./dep/libvmm)
 export LIONSOS := $(abspath ./dep/lionsos)
+export LIBMICROKITCO_PATH := $(abspath ./dep/libmicrokitco)
 
 IMAGE_FILE := $(BUILD_DIR)/loader.img
 REPORT_FILE := $(BUILD_DIR)/report.txt

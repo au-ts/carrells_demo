@@ -6,7 +6,7 @@ import struct
 import subprocess
 from dataclasses import dataclass
 from board import BOARDS, add_x86_hpet
-from sdfgen import SystemDescription, Sddf, DeviceTree, Vmm
+from sdfgen import SystemDescription, Sddf, DeviceTree, Vmm, LionsOs
 from importlib.metadata import version
 from typing import Optional
 
@@ -55,14 +55,9 @@ def init_serial_system(timer_system: Sddf.Timer):
         "serial_virt_rx", "serial_virt_rx.elf", priority=199, stack_size=0x2000
     )
 
-    serial_node = None
-    if board.arch != SystemDescription.Arch.X86_64:
-        serial_node = dtb.node(board.serial)
-        assert serial_node is not None
-
     serial_system = Sddf.Serial(
         sdf,
-        serial_node,
+        None,
         serial_driver,
         serial_virt_tx,
         virt_rx=serial_virt_rx,
@@ -82,13 +77,9 @@ def init_serial_system(timer_system: Sddf.Timer):
     return serial_system
 
 
-def init_net_system(timer_system: Sddf.Timer, pci_driver: ProtectionDomain):
+# def init_net_system(timer_system: Sddf.Timer, pci_driver: ProtectionDomain):
+def init_net_system(timer_system: Sddf.Timer):
     # Net subsystem
-    net_node = None
-    if board.arch != SystemDescription.Arch.X86_64:
-        net_node = dtb.node(board.ethernet)
-        assert net_node is not None
-
     eth_driver = ProtectionDomain(
         "eth_driver", "eth_driver.elf", priority=101, budget=100, period=400
     )
@@ -105,18 +96,87 @@ def init_net_system(timer_system: Sddf.Timer, pci_driver: ProtectionDomain):
         timer_system.add_client(eth_driver)
 
     net_system = Sddf.Net(
-        sdf, net_node, eth_driver, net_virt_tx, net_virt_rx, vswitch=vswitch
+        sdf, None, eth_driver, net_virt_tx, net_virt_rx, vswitch=vswitch
     )
     sdf.add_pd(eth_driver)
     sdf.add_pd(net_virt_rx)
     sdf.add_pd(net_virt_tx)
     sdf.add_pd(vswitch)
 
-    pci_driver.add_cap_map(CapMap(CapMap.CapType.Vspace, eth_driver, None, 2))
-    pci_driver.add_cap_map(CapMap(CapMap.CapType.Cspace, eth_driver, None, 3))
-    sdf.add_channel(Channel(pci_driver, eth_driver, a_id=1, b_id=10))
+    # pci_driver.add_cap_map(CapMap(CapMap.CapType.Vspace, eth_driver, None, 2))
+    # pci_driver.add_cap_map(CapMap(CapMap.CapType.Cspace, eth_driver, None, 3))
+    # sdf.add_channel(Channel(pci_driver, eth_driver, a_id=1, b_id=10))
 
     return net_system, net_virt_tx
+
+
+def init_blk_system(timer_system: Sddf.Timer):
+    blk_driver = ProtectionDomain("blk_driver", "blk_driver.elf", priority=200)
+    blk_virt = ProtectionDomain("blk_virt", "blk_virt.elf", priority=199, stack_size=0x2000)
+    blk_system = Sddf.Blk(sdf, None, blk_driver, blk_virt)
+    sdf.add_pd(blk_driver)
+    sdf.add_pd(blk_virt)
+
+    timer_system.add_client(blk_driver)
+    dma_regions = [
+            ("nvme_admin_sq", 0x5EDF0000, 0x20100000, 0x1000),
+            ("nvme_admin_cq", 0x5EDF1000, 0x20101000, 0x1000),
+            ("nvme_io_sq", 0x5EDF2000, 0x20102000, 0x1000),
+            ("nvme_io_cq", 0x5EDF3000, 0x20103000, 0x1000),
+            ("nvme_identify", 0x5EDF4000, 0x20104000, 0x2000),
+            ("nvme_prp_list", 0x5F800000, 0x20200000, 0x80000),
+        ]
+
+    for name, paddr, vaddr, size in dma_regions:
+        mr = SystemDescription.MemoryRegion(sdf, name, size, paddr=paddr)
+        sdf.add_mr(mr)
+        blk_driver.add_map(SystemDescription.Map(mr, vaddr, "rw", cached=False))
+
+    # IO ports
+    pci_config_addr_port = SystemDescription.IoPort(0xCF8, 4, 1)
+    blk_driver.add_ioport(pci_config_addr_port)
+
+    pci_config_data_port = SystemDescription.IoPort(0xCFC, 4, 2)
+    blk_driver.add_ioport(pci_config_data_port)
+
+    if board.name == "qemu_virt_x86":
+        # BAR0: MMIO (always uncached)
+        nvme_bar0_mr = SystemDescription.MemoryRegion(
+            sdf, "nvme_bar0", 0x4000, paddr=0xFEBD4000
+        )
+
+        # IRQ
+        nvme_irq = SystemDescription.IrqIoapic(ioapic_id=0,
+                                               pin=10,
+                                               vector=1,
+                                               trigger=IrqIoapic.Trigger.LEVEL,
+                                               polarity=IrqIoapic.Polarity.ACTIVELOW,
+                                               id=17)
+
+    elif board.name == "vb_105" or board.name == 'viscous':
+        # BAR0: MMIO (always uncached)
+        nvme_bar0_mr = SystemDescription.MemoryRegion(
+            # sdf, "nvme_bar0", 0x4000, paddr=0x8f800000
+            sdf, "nvme_bar0", 0x4000, paddr=0x92100000
+        )
+        # IRQ
+        nvme_irq = SystemDescription.IrqIoapic(ioapic_id=0,
+                                               pin=16,
+                                               vector=1,
+                                               trigger=IrqIoapic.Trigger.LEVEL,
+                                               polarity=IrqIoapic.Polarity.ACTIVELOW,
+                                               id=17)
+
+    if 'nvme_bar0_mr' in locals():
+        sdf.add_mr(nvme_bar0_mr)
+        blk_driver.add_map(
+            SystemDescription.Map(nvme_bar0_mr, 0x20000000, "rw", cached=False)
+        )
+
+    if 'nvme_irq' in locals():
+        blk_driver.add_irq(nvme_irq)
+
+    return blk_system
 
 
 def x86_virtio_net(eth_driver):
@@ -189,7 +249,6 @@ def add_vm_client(
     serial_system: Sddf.Serial,
     net_system: Sddf.Net,
     timer_system: Sddf.Timer,
-    client_dtb: Optional[DeviceTree],
 ):
     vmm_name = f"CLIENT_VMM{client_id}"
     vmm_elf = f"client_vmm{client_id}.elf"
@@ -197,7 +256,7 @@ def add_vm_client(
 
     vmm_client = ProtectionDomain(vmm_name, vmm_elf, priority=0, cpu=cpu_id, stack_size=0x4000)
     vm_client = VirtualMachine(vm_name, [VirtualMachine.Vcpu(id=0)])
-    client = Vmm(sdf, vmm_client, vm_client, client_dtb)
+    client = Vmm(sdf, vmm_client, vm_client, None)
     sdf.add_pd(vmm_client)
 
     serial_system.add_client(vmm_client)
@@ -345,22 +404,57 @@ def update_elf_section(
         == 0
     )
 
+def add_container(
+    serial_system: Sddf.Serial,
+    net_system: Sddf.Net,
+):
+    container = ProtectionDomain("container", "container.elf", priority=90)
+    sdf.add_pd(container)
+
+    # Serial system
+    serial_system.add_client(container)
+
+    # Net system
+    client_net_copier = ProtectionDomain(
+        f"client_container_net_copier", f"network_copy_container.elf", priority=97, budget=20000
+    )
+    sdf.add_pd(client_net_copier)
+
+    net_system.add_client_with_copier(
+        container, copier=client_net_copier, vswitch=True
+    )
+
+    return container
+
 
 def generate(
     sdf_file: str,
     output_dir: str,
-    dtb: Optional[DeviceTree],
-    client_dtb: Optional[DeviceTree],
 ):
-    acpi_driver, pci_driver, acpi_tables_config = init_acpi_pci()
+    # acpi_driver, pci_driver, acpi_tables_config = init_acpi_pci()
     timer_system = init_timer_system()
     serial_system = init_serial_system(timer_system)
-    net_system, net_virt_tx = init_net_system(timer_system, pci_driver)
+    # net_system, net_virt_tx = init_net_system(timer_system, pci_driver)
+    net_system, net_virt_tx = init_net_system(timer_system)
+    blk_system = init_blk_system(timer_system)
 
-    client0, vmm_client0, vm_client0 = add_vm_client(0, 0, serial_system, net_system, timer_system, client_dtb)
-    client1, vmm_client1, vm_client1 = add_vm_client(1, 1, serial_system, net_system, timer_system, client_dtb)
-    client2, vmm_client2, vm_client2 = add_vm_client(2, 2, serial_system, net_system, timer_system, client_dtb)
-    client3, vmm_client3, vm_client3 = add_vm_client(3, 3, serial_system, net_system, timer_system, client_dtb)
+    # client0, vmm_client0, vm_client0 = add_vm_client(0, 0, serial_system, net_system, timer_system)
+    # client1, vmm_client1, vm_client1 = add_vm_client(1, 1, serial_system, net_system, timer_system)
+    # client2, vmm_client2, vm_client2 = add_vm_client(2, 2, serial_system, net_system, timer_system)
+    # client3, vmm_client3, vm_client3 = add_vm_client(3, 3, serial_system, net_system, timer_system)
+
+    container = add_container(serial_system, net_system)
+
+    # File system
+    fatfs = ProtectionDomain("fatfs", "fat.elf", priority=96)
+    fs = LionsOs.FileSystem.Fat(
+        sdf,
+        fatfs,
+        container,
+        blk=blk_system,
+        partition=0
+    )
+    sdf.add_pd(fatfs)
 
     if timer_system:
         assert timer_system.connect()
@@ -375,31 +469,37 @@ def generate(
     # 1 <-> 0, 3, V
     # 2 <-> V
     # 3 <-> 0, 1, V
-    net_system.add_acl_rule(vmm_client0, vmm_client3)
-    net_system.add_acl_rule(vmm_client0, net_virt_tx)
-    net_system.add_acl_rule(vmm_client1, vmm_client0)
-    net_system.add_acl_rule(vmm_client1, net_virt_tx)
-    net_system.add_acl_rule(vmm_client2, net_virt_tx)
-    net_system.add_acl_rule(vmm_client3, vmm_client0)
-    net_system.add_acl_rule(vmm_client3, vmm_client1)
-    net_system.add_acl_rule(vmm_client3, net_virt_tx)
+    # net_system.add_acl_rule(vmm_client0, vmm_client3)
+    # net_system.add_acl_rule(vmm_client0, net_virt_tx)
+    # net_system.add_acl_rule(vmm_client1, vmm_client0)
+    # net_system.add_acl_rule(vmm_client1, net_virt_tx)
+    # net_system.add_acl_rule(vmm_client2, net_virt_tx)
+    # net_system.add_acl_rule(vmm_client3, vmm_client0)
+    # net_system.add_acl_rule(vmm_client3, vmm_client1)
+    # net_system.add_acl_rule(vmm_client3, net_virt_tx)
+    net_system.add_acl_rule(container, net_virt_tx)
 
     assert net_system.serialise_config(output_dir)
-    assert client0.connect()
-    assert client0.serialise_config(output_dir)
-    assert client1.connect()
-    assert client1.serialise_config(output_dir)
-    assert client2.connect()
-    assert client2.serialise_config(output_dir)
-    assert client3.connect()
-    assert client3.serialise_config(output_dir)
+    # assert client0.connect()
+    # assert client0.serialise_config(output_dir)
+    # assert client1.connect()
+    # assert client1.serialise_config(output_dir)
+    # assert client2.connect()
+    # assert client2.serialise_config(output_dir)
+    # assert client3.connect()
+    # assert client3.serialise_config(output_dir)
+    assert fs.connect()
+    assert fs.serialise_config(output_dir)
+    assert blk_system.connect()
+    assert blk_system.serialise_config(output_dir)
+
 
     with open(f"{output_dir}/{sdf_file}", "w+") as f:
         f.write(sdf.render())
 
-    with open(f"{output_dir}/acpi_tables_summary.data", "wb+") as f:
-        f.write(acpi_tables_config.summary_serialise())
-    update_elf_section("acpi_driver.elf", "acpi_tables_summary", "acpi_tables_summary")
+    # with open(f"{output_dir}/acpi_tables_summary.data", "wb+") as f:
+    #     f.write(acpi_tables_config.summary_serialise())
+    # update_elf_section("acpi_driver.elf", "acpi_tables_summary", "acpi_tables_summary")
 
 
 if __name__ == "__main__":
@@ -429,16 +529,4 @@ if __name__ == "__main__":
     global obj_copy
     obj_copy = args.objcopy
 
-    dtb = None
-    client_dtb = None
-    if board.arch != SystemDescription.Arch.X86_64:
-        if args.dtb is None or args.client_dtb is None:
-            print("--dtb and --client-dtb must be provided for non x86 targets")
-
-        with open(args.dtb, "rb") as f:
-            dtb = DeviceTree(f.read())
-
-        with open(args.client_dtb, "rb") as f:
-            client_dtb = DeviceTree(f.read())
-
-    generate(args.sdf, args.output, dtb, client_dtb)
+    generate(args.sdf, args.output)
