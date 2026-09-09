@@ -21,3 +21,6 @@
 [submodule "dep/sel4"]
 	path = dep/sel4
 	url = https://github.com/au-ts/sel4
+[submodule "dep/machine_queue"]
+	path = dep/machine_queue
+	url = git@github.com:au-ts/machine_queue.git
